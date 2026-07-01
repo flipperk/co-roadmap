@@ -1,8 +1,8 @@
 name = "co-roadmap"
-main = "src/index.js"
+main = "index.js"
 compatibility_date = "2026-06-01"
 
-# Opslag-koppeling zit hier al in — geen handmatige binding meer nodig
+# Opslag-koppeling (KV) — geen handmatige binding meer nodig
 [[kv_namespaces]]
 binding = "CO_ROADMAP_DATA"
 id = "ca7f8dfc51ce4740aaaa04d29d50ebbf"
