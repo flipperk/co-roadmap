@@ -1,6 +1,6 @@
 /**
  * C&O Roadmap — Worker + KV Sync (all-in-one)
- * De app-HTML zit hierin ingebakken; daarnaast twee API-routes voor opslag in KV.
+ * Bevat de app-HTML én twee opslag-routes (KV).
  */
 const KV_NS = 'CO_ROADMAP_DATA';
 const SK = 'co-roadmap-state';
@@ -77,6 +77,10 @@ const HTML = `<!DOCTYPE html>
   .lane-owner{font-size:10px;color:var(--ink-soft);font-style:italic;padding-left:1px;margin-top:-1px}
   .lane-adviseur{font-size:10px;color:#475569;display:flex;align-items:center;gap:4px;margin-top:2px;font-weight:550}
   .lane-adviseur .adv-ico{color:#94a3b8;font-size:11px}
+  .viewtoggle{display:inline-flex;gap:0;border:1px solid var(--line-strong);border-radius:9px;overflow:hidden;background:#f4f6fa}
+  .viewtoggle .vt{border:none;background:transparent;padding:7px 13px;font-size:12.5px;font-weight:600;color:var(--ink-soft);cursor:pointer;white-space:nowrap}
+  .viewtoggle .vt:hover{background:#e9eef6}
+  .viewtoggle .vt.on{background:var(--navy,#1f3a5f);color:#fff}
   .popmenu{position:fixed;z-index:80;width:240px;background:#fff;border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 10px 30px rgba(20,30,50,.2);padding:5px;display:flex;flex-direction:column}
   .popmenu .pm-head{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);padding:6px 8px 4px}
   .popmenu .pm-item{text-align:left;border:none;background:#fff;padding:7px 8px;border-radius:7px;cursor:pointer;font-size:12.5px;color:var(--ink);display:flex;align-items:center;gap:6px}
@@ -195,6 +199,10 @@ const HTML = `<!DOCTYPE html>
     <button class="tb primary" id="addItem">+ Activiteit</button>
     <button class="tb" id="addLane">+ Baan</button>
     <button class="tb" id="linkMode" title="Verbind twee activiteiten">↔ Verbinden</button>
+  </div>
+  <div class="grp viewtoggle" id="viewToggle" title="Wissel tussen MT-portefeuilles en de brown-paper ontwikkelstromen">
+    <button class="vt" data-view="portefeuille">Portefeuilles</button>
+    <button class="vt" data-view="brownpaper">Brown Paper</button>
   </div>
   <div class="grp legend" id="legend">
     <span class="li"><i style="background:var(--p-hoog)"></i>Hoog</span>
@@ -369,14 +377,44 @@ function perLabel(id){
   return (y?y.label+" ":"") + p.label;
 }
 // Zet oude (één-periode) items om naar begin/eind, en bewaak geldige volgorde
+// Brown-paper ontwikkelstromen (tweede weergave)
+const SEED_STREAMS = [
+  {id:"externe",  name:"Externe ontwikkelingen",            color:"#b45309"},
+  {id:"interne",  name:"Interne ROC-brede ontwikkelingen",  color:"#7c3aed"},
+  {id:"visie",    name:"Visieontwikkeling",                 color:"#2563eb"},
+  {id:"portfolio",name:"Portfolio-verschuivingen",          color:"#059669"},
+  {id:"kwaliteit",name:"Kwaliteitszorg",                    color:"#0891b2"},
+  {id:"overig",   name:"Overige zaken",                     color:"#64748b"},
+];
+
+// Weergave: 'portefeuille' (MT-portefeuilles) of 'brownpaper' (ontwikkelstromen)
+let view = (function(){ try{ return localStorage.getItem("co_view") || "portefeuille"; }catch(e){ return "portefeuille"; } })();
+function curLanes(){ return view==="brownpaper" ? state.streams : state.lanes; }
+function groupField(){ return view==="brownpaper" ? "stroom" : "lane"; }
+function setView(v){ view=v; try{ localStorage.setItem("co_view", v); }catch(e){} updateViewToggle(); render(); }
+
+// Bepaal een passende brown-paper stroom voor een activiteit die er nog geen heeft
+function defaultStroom(it){
+  const t = ((it.title||"") + " " + (it.thema||"")).toLowerCase();
+  if(/wet |vaba|arbeidsmarkt|ocw|\\bllo\\b|stagediscrimin|school naar duurzaam|inspectie|kwalificatie|kd-/.test(t)) return "externe";
+  if(it.lane==="arbeidsmarkt") return "externe";
+  if(it.lane==="kwaliteit") return "kwaliteit";
+  if(it.lane==="onderwijs") return /portfolio|niveau 2|e-commerce|ecommerce|opleiding/.test(t) ? "portfolio" : "visie";
+  if(/strategische roc-agenda|\\boverig/.test(t)) return "overig";
+  return "interne";
+}
+
 function normalizeState(){
-  if(!state || !state.items) return;
+  if(!state) return;
+  if(!state.streams || !state.streams.length) state.streams = clone(SEED_STREAMS);
+  if(!state.items) return;
   state.items.forEach(it=>{
     if(!it.start) it.start = it.period || NOW_PERIOD;
     if(!it.end)   it.end   = it.period || it.start;
     if(pIndex(it.start)<0) it.start = NOW_PERIOD;
     if(pIndex(it.end)<0)   it.end   = it.start;
     if(pIndex(it.end) < pIndex(it.start)) it.end = it.start; // eind nooit vóór begin
+    if(!it.stroom || !state.streams.find(s=>s.id===it.stroom)) it.stroom = defaultStroom(it);
     delete it.period;
   });
 }
@@ -437,7 +475,7 @@ function load(){
   try{ const s = localStorage.getItem(STORE_KEY); return s ? JSON.parse(s) : null; }catch(e){ return null; }
 }
 function uid(){ return "i_"+Math.random().toString(36).slice(2,9); }
-function laneById(id){ return state.lanes.find(l=>l.id===id); }
+function laneById(id){ return state.lanes.find(l=>l.id===id) || (state.streams||[]).find(l=>l.id===id); }
 function itemById(id){ return state.items.find(i=>i.id===id); }
 
 /* ----------------------------------------------------------------
@@ -494,29 +532,32 @@ function render(){
     grid.appendChild(ph);
   });
 
-  // --- lanes ---
+  // --- lanes (afhankelijk van weergave) ---
   const items = visibleItems();
-  state.lanes.forEach((lane, li)=>{
+  const gf = groupField();
+  const isStream = view==="brownpaper";
+  curLanes().forEach((lane, li)=>{
     const rowNum = li + 3; // header occupies rows 1-2
     // lane label
     const ll = document.createElement("div");
-    const kind = lane.kind || "mt";
+    const kind = isStream ? "stream" : (lane.kind || "mt");
     ll.className = "lane-label kind-" + kind;
     ll.style.gridRow = \`\${rowNum}\`; ll.style.gridColumn = "1";
-    const laneItems = items.filter(i=>i.lane===lane.id);
+    const laneItems = items.filter(i=>i[gf]===lane.id);
     const hoog = laneItems.filter(i=>i.prio==="hoog").length;
     const loadPct = Math.min(100, laneItems.length * 11);
-    const eyebrow = kind==="directeur" ? "Directeursopgave" : kind==="perifeer" ? "Perifeer · geen MT" : "MT-portefeuille";
+    const eyebrow = isStream ? "Ontwikkelstroom"
+      : kind==="directeur" ? "Directeursopgave" : kind==="perifeer" ? "Perifeer · geen MT" : "MT-portefeuille";
     ll.innerHTML = \`
       <div class="lane-eyebrow">\${eyebrow}</div>
       <div class="ltop"><span class="lane-dot" style="background:\${lane.color}"></span>
         <span class="lane-name" data-lane="\${lane.id}" title="Klik om te hernoemen">\${esc(lane.name)}</span></div>
-      \${lane.owner?\`<div class="lane-owner">\${esc(lane.owner)}</div>\`:""}
-      \${lane.adviseur?\`<div class="lane-adviseur"><span class="adv-ico">◇</span>Adviseur: \${esc(lane.adviseur)}</div>\`:""}
+      \${(!isStream && lane.owner)?\`<div class="lane-owner">\${esc(lane.owner)}</div>\`:""}
+      \${(!isStream && lane.adviseur)?\`<div class="lane-adviseur"><span class="adv-ico">◇</span>Adviseur: \${esc(lane.adviseur)}</div>\`:""}
       <div class="lane-meta">\${laneItems.length} activiteiten\${hoog?\` · <b style="color:var(--p-hoog)">\${hoog} hoog</b>\`:""}</div>
       <div class="lane-load"><i style="width:\${loadPct}%;background:\${lane.color}"></i></div>
       <div class="lane-tools">
-        <button class="mini" data-adviseur="\${lane.id}">\${lane.adviseur?"Adviseur wijzigen":"+ Adviseur"}</button>
+        \${isStream?"":\`<button class="mini" data-adviseur="\${lane.id}">\${lane.adviseur?"Adviseur wijzigen":"+ Adviseur"}</button>\`}
         <button class="mini" data-recolor="\${lane.id}">Kleur</button>
         <button class="mini" data-dellane="\${lane.id}">Verwijder baan</button>
       </div>\`;
@@ -547,7 +588,7 @@ function render(){
         const max = PERIODS.length - 1;
         let ns = tgt, ne = tgt + dur;
         if(ne > max){ ne = max; ns = max - dur; if(ns < 0) ns = 0; }
-        it.lane = lane.id; it.start = PERIODS[ns].id; it.end = PERIODS[Math.max(ns,ne)].id;
+        it[gf] = lane.id; it.start = PERIODS[ns].id; it.end = PERIODS[Math.max(ns,ne)].id;
         save(); render();
       });
       bg.appendChild(bc);
@@ -691,6 +732,7 @@ function openDrawer(id){
   editingId = id;
   document.getElementById("drTitle").textContent = "Activiteit bewerken";
   const laneOpts = state.lanes.map(l=>\`<option value="\${l.id}" \${l.id===it.lane?"selected":""}>\${esc(l.name)}</option>\`).join("");
+  const stroomOpts = (state.streams||[]).map(s=>\`<option value="\${s.id}" \${s.id===it.stroom?"selected":""}>\${esc(s.name)}</option>\`).join("");
   const perOptsFor = sel => PERIODS.map(p=>{
     const yr = p.year==="continu" ? "" : (YEARS.find(y=>y.id===p.year)||{}).label+" · ";
     return \`<option value="\${p.id}" \${p.id===sel?"selected":""}>\${yr}\${p.label}</option>\`;
@@ -705,7 +747,10 @@ function openDrawer(id){
 
   drBody.innerHTML = \`
     <div class="fld"><label>Titel</label><input id="f_title" value="\${esc(it.title)}"></div>
-    <div class="fld"><label>Baan / portefeuille</label><select id="f_lane">\${laneOpts}</select></div>
+    <div class="two">
+      <div class="fld"><label>Baan / portefeuille</label><select id="f_lane">\${laneOpts}</select></div>
+      <div class="fld"><label>Brown-paper stroom</label><select id="f_stroom">\${stroomOpts}</select></div>
+    </div>
     <div class="two">
       <div class="fld"><label>Van (begin)</label><select id="f_start">\${startOpts}</select></div>
       <div class="fld"><label>Tot en met (eind)</label><select id="f_end">\${endOpts}</select></div>
@@ -734,7 +779,7 @@ document.getElementById("drClose").addEventListener("click", closeDrawer);
 document.getElementById("drSave").addEventListener("click", ()=>{
   const it = itemById(editingId); if(!it) return;
   it.title = val("f_title")||"Naamloos";
-  it.lane = val("f_lane");
+  it.lane = val("f_lane"); it.stroom = val("f_stroom");
   let st = val("f_start"), en = val("f_end");
   if(pIndex(en) < pIndex(st)) en = st; // eind nooit vóór begin
   it.start = st; it.end = en;
@@ -755,14 +800,20 @@ document.getElementById("drDelete").addEventListener("click", ()=>{
    TOOLBAR ACTIES
 -----------------------------------------------------------------*/
 document.getElementById("addItem").addEventListener("click", ()=>{
-  const it = { id:uid(), lane:state.lanes[0].id, start:NOW_PERIOD, end:NOW_PERIOD, title:"Nieuwe activiteit", lead:"", prio:"midden", thema:"", detail:"", links:[] };
+  const firstLane = state.lanes[0].id;
+  const firstStroom = (state.streams&&state.streams[0]?state.streams[0].id:"interne");
+  const it = { id:uid(), lane:firstLane, stroom:firstStroom, start:NOW_PERIOD, end:NOW_PERIOD, title:"Nieuwe activiteit", lead:"", prio:"midden", thema:"", detail:"", links:[] };
+  if(view==="brownpaper" && state.streams[0]) it.stroom = state.streams[0].id;
   state.items.push(it); save(); render(); openDrawer(it.id);
 });
 document.getElementById("addLane").addEventListener("click", ()=>{
-  const name = prompt("Naam van de nieuwe baan / portefeuille:");
+  const label = view==="brownpaper" ? "ontwikkelstroom" : "baan / portefeuille";
+  const name = prompt("Naam van de nieuwe " + label + ":");
   if(!name) return;
   const palette = ["#2563eb","#7c3aed","#0891b2","#059669","#ea580c","#db2777","#0d9488","#64748b","#9333ea","#0ea5e9"];
-  state.lanes.push({ id:"l_"+Math.random().toString(36).slice(2,7), name, color: palette[state.lanes.length % palette.length] });
+  const set = curLanes();
+  const prefix = view==="brownpaper" ? "s_" : "l_";
+  set.push({ id:prefix+Math.random().toString(36).slice(2,7), name, color: palette[set.length % palette.length] });
   save(); render();
 });
 grid.addEventListener("click", e=>{
@@ -824,16 +875,31 @@ function recolorLane(id){
   if(c && /^#?[0-9a-fA-F]{6}\$/.test(c.trim())){ lane.color = c.trim().startsWith("#")?c.trim():"#"+c.trim(); save(); render(); }
 }
 function deleteLane(id){
-  if(state.lanes.length<=1){ alert("Er moet minstens één baan blijven."); return; }
+  const set = curLanes(); const gf = groupField();
+  if(set.length<=1){ alert("Er moet minstens één baan blijven."); return; }
   const lane = laneById(id);
-  const n = state.items.filter(i=>i.lane===id).length;
-  if(!confirm(\`Baan “\${lane.name}” verwijderen?\` + (n?\` \${n} activiteit(en) verhuizen naar “\${state.lanes.find(l=>l.id!==id).name}”.\`:""))) return;
-  const fallback = state.lanes.find(l=>l.id!==id).id;
-  state.items.forEach(i=>{ if(i.lane===id) i.lane=fallback; });
-  state.lanes = state.lanes.filter(l=>l.id!==id);
+  const n = state.items.filter(i=>i[gf]===id).length;
+  const fallbackLane = set.find(l=>l.id!==id);
+  if(!confirm(\`“\${lane.name}” verwijderen?\` + (n?\` \${n} activiteit(en) verhuizen naar “\${fallbackLane.name}”.\`:""))) return;
+  state.items.forEach(i=>{ if(i[gf]===id) i[gf]=fallbackLane.id; });
+  if(view==="brownpaper") state.streams = state.streams.filter(l=>l.id!==id);
+  else state.lanes = state.lanes.filter(l=>l.id!==id);
   save(); render();
 }
 document.getElementById("fPrio").addEventListener("change", e=>{ filterPrio = e.target.value; render(); });
+
+/* Weergave-schakelaar */
+function updateViewToggle(){
+  document.querySelectorAll("#viewToggle .vt").forEach(b=>{
+    b.classList.toggle("on", b.getAttribute("data-view")===view);
+  });
+}
+document.getElementById("viewToggle").addEventListener("click", e=>{
+  const b = e.target.closest(".vt"); if(!b) return;
+  const v = b.getAttribute("data-view");
+  if(v!==view) setView(v);
+});
+updateViewToggle();
 
 /* export / import / print */
 document.getElementById("exportBtn").addEventListener("click", ()=>{
